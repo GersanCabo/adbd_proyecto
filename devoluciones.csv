@@ -1,0 +1,11 @@
+pedido_id,fecha_devolucion,motivo,estado
+102,2026-11-10,Producto defectuoso,Aprobada
+102,2026-11-10,Producto defectuoso,Aprobada
+105,12/11/2026,  Talla incorrecta ,Aprobada
+108,fecha_invalida,,Pendiente
+112,2026-11-14,No cumple expectativas,Rechazada
+112,2026-11-14,No cumple expectativas,Rechazada
+119, 18-11-2026 ,Envio tardio,  aprobada
+125,2026/11/20,   ,Pendiente
+134,31/02/2026,Articulo danado en transporte,En revision
+141,,Cambio de opinion,
