@@ -52,26 +52,27 @@ def parsear_fechas_mixtas(serie: pd.Series) -> pd.Series:
     return resultado
 
 
-def limpiar_devoluciones(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Limpia espacios, elimina duplicaciones y separa registros válidos de los destinados a cuarentena."""
+def _normalizar_y_deduplicar_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Valida columnas esperadas, limpia espacios/vacíos y elimina duplicados exactos."""
     faltantes = COLUMNAS_CSV_ESPERADAS - set(df_raw.columns)
     if faltantes:
         raise ValueError(f"El CSV no contiene las columnas esperadas: {sorted(faltantes)}")
 
     df = df_raw.copy()
-
-    # Eliminar espacios sobrantes en todas las columnas y tratar cadenas vacías como NA
     for col in df.columns:
         df[col] = df[col].astype("string").str.strip().replace("", pd.NA)
 
-    # Eliminar duplicados exactos antes de validar (ej. pedidos 102 y 112)
     filas_antes = len(df)
     df = df.drop_duplicates().reset_index(drop=True)
     duplicados_eliminados = filas_antes - len(df)
     if duplicados_eliminados:
         logging.info(f"Duplicados exactos eliminados del CSV: {duplicados_eliminados}")
 
-    # Validaciones de calidad
+    return df
+
+
+def _evaluar_calidad_devoluciones(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """Valida reglas de calidad por campo y construye el motivo de rechazo por fila."""
     pedido_num = pd.to_numeric(df["pedido_id"], errors="coerce")
     pedido_valido = (
         pedido_num.notna() & (pedido_num > 0) & (pedido_num % 1 == 0)
@@ -83,7 +84,6 @@ def limpiar_devoluciones(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     estado_norm = df["estado"].str.capitalize()
     estado_valido = estado_norm.notna().astype(bool)
 
-    # Registrar motivo exacto de rechazo por fila
     motivos = []
     for idx in df.index:
         errores = []
@@ -95,25 +95,43 @@ def limpiar_devoluciones(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
             errores.append("estado nulo o vacío")
         motivos.append("; ".join(errores))
 
-    df["_motivo_error"] = motivos
-    es_valido = pedido_valido & fecha_valida & estado_valido
+    return {
+        "es_valido": pedido_valido & fecha_valida & estado_valido,
+        "motivo_error": pd.Series(motivos, index=df.index),
+        "pedido_num": pedido_num,
+        "fecha_ok": fecha_ok,
+        "estado_norm": estado_norm,
+    }
 
-    invalidos = df[~es_valido].copy()
+
+def _priorizar_devoluciones_validas(
+    df: pd.DataFrame, validacion: dict[str, pd.Series]
+) -> pd.DataFrame:
+    """Tipa los registros válidos y conserva la devolución más reciente por pedido_id."""
+    es_valido = validacion["es_valido"]
     validas = df[es_valido].copy()
 
-    validas["pedido_id"] = pedido_num[es_valido].astype("int64")
-    validas["fecha_devolucion_ok"] = fecha_ok[es_valido]
-    validas["estado"] = estado_norm[es_valido]
+    validas["pedido_id"] = validacion["pedido_num"][es_valido].astype("int64")
+    validas["fecha_devolucion_ok"] = validacion["fecha_ok"][es_valido]
+    validas["estado"] = validacion["estado_norm"][es_valido]
     validas["motivo"] = validas["motivo"].fillna("Sin especificar")
 
-    # Si hubiese varias devoluciones válidas para el mismo pedido_id, conservar la más reciente
-    validas = (
+    return (
         validas.sort_values("fecha_devolucion_ok")
         .drop_duplicates(subset=["pedido_id"], keep="last")
     )
 
-    return validas, invalidos
+def limpiar_devoluciones(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Orquesta la limpieza, validación y priorización de devoluciones."""
+    df_limpio = _normalizar_y_deduplicar_csv(df_raw)
+    validacion = _evaluar_calidad_devoluciones(df_limpio)
 
+    df_limpio["_motivo_error"] = validacion["motivo_error"]
+
+    invalidos = df_limpio[~validacion["es_valido"]].copy()
+    validas = _priorizar_devoluciones_validas(df_limpio, validacion)
+
+    return validas, invalidos
 
 def ejecutar_etl(carga_completa: bool = False):
     """
